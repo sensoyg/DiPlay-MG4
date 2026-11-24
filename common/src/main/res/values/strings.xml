@@ -488,4 +488,19 @@
     <string name="ota_download_prompt">Download and install MG4CPlay %1$s? The APK signature and SHA-256 will be verified first.</string>
     <string name="ota_download">Download update</string>
     <string name="ota_failed">Update check failed: %1$s</string>
+    <string name="previous_crash_report">Previous crash report</string>
+    <string name="copy">Copy</string>
+    <string name="crash_report_copied">Crash report copied</string>
+    <string name="mg4_wheel_speed_for_tunnels">Wheel speed for tunnels</string>
+    <string name="mg4_wheel_speed_for_tunnels_description">With Report location to iPhone on, MG4CPlay sends the MG4\'s wheel speed and gear so Apple Maps keeps moving in tunnels and car parks. Reconnects CarPlay.</string>
+    <string name="carplay_night_mode">CarPlay night mode</string>
+    <string name="night_mode_auto">Auto · headlights &amp; system</string>
+    <string name="night_mode_system">Follow car system theme</string>
+    <string name="night_mode_dark">Always dark</string>
+    <string name="night_mode_light">Always light</string>
+    <string name="mg4_launcher_overlay">Stock launcher CarPlay shortcut</string>
+    <string name="mg4_launcher_overlay_description">Redirects the stock MG launcher\'s Apple CarPlay card to MG4CPlay (SWI69 &amp; DBI68/SWI68).</string>
+    <string name="import_car_hotspot">Read hotspot from car</string>
+    <string name="car_hotspot_imported">Imported car hotspot: %1$s</string>
+    <string name="car_hotspot_unreadable">Could not read saved car hotspot details on this firmware</string>
 </resources>

@@ -38,6 +38,13 @@ internal fun EvChargingConnectors.localizedLabel(context: Context): String = con
     EvChargingConnectors.CCS1_J1772 -> R.string.connectors_ccs1_j1772
 })
 
+internal fun NightModePreference.localizedLabel(context: Context): String = context.getString(when (this) {
+    NightModePreference.AUTO -> R.string.night_mode_auto
+    NightModePreference.SYSTEM -> R.string.night_mode_system
+    NightModePreference.DARK -> R.string.night_mode_dark
+    NightModePreference.LIGHT -> R.string.night_mode_light
+})
+
 internal fun ManualHotspotValidation.Error.messageResource(): Int = when (this) {
     ManualHotspotValidation.Error.EMPTY_NAME -> R.string.hotspot_error_empty_name
     ManualHotspotValidation.Error.LONG_NAME -> R.string.hotspot_error_long_name

@@ -36,9 +36,10 @@ object Mg4Vehicle : VehicleStatusProvider {
     }
 
     fun available(context: Context): Boolean {
-        return runCatching { FirmwareInfo.isDetectedGenerationSupported() }
+        val evSupported = runCatching { FirmwareInfo.isDetectedGenerationSupported() }
             .onFailure { Log.e(TAG, "Could not detect MG4 firmware", it) }
             .getOrDefault(false)
+        return evSupported || Mg4SaicSignals.isSupportedMg4Firmware()
     }
 
     @Synchronized
@@ -84,6 +85,7 @@ object Mg4Vehicle : VehicleStatusProvider {
             SaicVehicleCondition.gearOrNull()
                 ?.takeIf { it in 1..4 }
                 ?.let { it == 1 }
+                ?: Mg4SaicSignals.readGearOrNull(context)?.let { it == 1 }
                 ?: EVHardware.isVehicleInPark()
         }
             .onFailure { Log.e(TAG, "Could not read MG4 gear", it) }
@@ -109,19 +111,27 @@ object Mg4Vehicle : VehicleStatusProvider {
 
     private fun pollSafely() {
         val context = app ?: return
-        if (!FirmwareInfo.isDetectedGenerationSupported()) return
-        val vehicle = reader?.read() ?: return
-        val percent = vehicle.socPercent?.toDouble() ?: return
-        val range = vehicle.rangeKm?.roundToInt() ?: return
+        if (!available(context)) return
+        val vehicle = reader?.read()
+        val fallback = if (vehicle?.socPercent == null || vehicle.rangeKm == null) {
+            Mg4SaicSignals.readBatteryFallback(context)
+        } else {
+            null
+        }
+        val percent = vehicle?.socPercent?.toDouble() ?: fallback?.socPercent ?: return
+        val range = vehicle?.rangeKm?.roundToInt() ?: fallback?.rangeKm ?: return
         val fraction = percent / 100.0
-        val currentKwh = vehicle.batteryEnergyKwh?.toDouble()
-        val capacityKwh = vehicle.batteryCapacityKwh?.toDouble()
+        val currentKwh = vehicle?.batteryEnergyKwh?.toDouble()
+        val capacityKwh = vehicle?.batteryCapacityKwh?.toDouble()
             ?: currentKwh?.takeIf { fraction > 0.0 }?.div(fraction)
         val maxRange = if (fraction > 0.0) (range / fraction).roundToInt() else range
         // iAP2 requires charge and capacity together. If AAOS does not expose Wh on this
         // firmware, use a normalized capacity so the ratio remains exactly the measured SOC.
         val reportedCapacityKwh = capacityKwh ?: 100.0
         val reportedCurrentKwh = currentKwh ?: reportedCapacityKwh * fraction
+        val charging = vehicle?.let {
+            it.chargePortConnected == true || (it.batteryPowerKw?.let { p -> p < -0.3f } == true)
+        } ?: fallback?.charging ?: false
         latest = VehicleStatusSnapshot(
             rangeKm = range,
             rangeWarning = percent <= BydOutputSettings.lowChargePercent(context),
@@ -129,13 +139,13 @@ object Mg4Vehicle : VehicleStatusProvider {
             currentChargeWh = (reportedCurrentKwh * 1000).roundToLong(),
             maxChargeWh = (reportedCapacityKwh * 1000).roundToLong(),
             maxRangeKm = maxRange,
-            charging = vehicle.chargePortConnected == true ||
-                (vehicle.batteryPowerKw?.let { it < -0.3f } == true),
+            charging = charging,
         )
         latestMillis = SystemClock.elapsedRealtime()
+        val label = Mg4SaicSignals.detectedVersionString() ?: FirmwareInfo.getDetectedString()
         Log.i(
             TAG,
-            "${FirmwareInfo.getDetectedString()} battery ${percent.roundToInt()}% range ${range}km",
+            "$label battery ${percent.roundToInt()}% range ${range}km",
         )
     }
 }

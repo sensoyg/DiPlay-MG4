@@ -59,4 +59,11 @@ class AppLocaleTest {
         AppLocale.save(context, AppLocale.SYSTEM)
         assertSame(context, AppLocale.wrap(context))
     }
+
+    @Test
+    fun turkishLocaleIsSupportedOnModernAndLegacyAndroid() {
+        AppLocale.save(context, AppLocale.TURKISH)
+        assertEquals("tr", manager.applicationLocales.toLanguageTags())
+        assertEquals("Türkçe", AppLocale.displayName(context, AppLocale.TURKISH))
+    }
 }

@@ -52,11 +52,19 @@ object BydOutputSettings {
     fun setChargingConnectors(context: Context, connectors: EvChargingConnectors) =
         prefs(context).edit().putString(KEY_CHARGING_CONNECTORS, connectors.name).apply()
 
-    /** Send wheel speed and gear with the car's GPS (needs ADB over network); applies on the next connection. */
+    /** Send wheel speed and gear with the car's GPS; applies on the next connection. */
     fun wheelSpeedToIphone(context: Context): Boolean = prefs(context).getBoolean(KEY_WHEEL_SPEED_TO_IPHONE, false)
 
     fun setWheelSpeedToIphone(context: Context, enabled: Boolean) =
         prefs(context).edit().putBoolean(KEY_WHEEL_SPEED_TO_IPHONE, enabled).apply()
+
+    /** Enable tunnel wheel speed on first use for vehicles with native speed telemetry. */
+    fun enableWheelSpeedToIphoneByDefault(context: Context) {
+        val preferences = prefs(context)
+        if (!preferences.contains(KEY_WHEEL_SPEED_TO_IPHONE)) {
+            preferences.edit().putBoolean(KEY_WHEEL_SPEED_TO_IPHONE, true).apply()
+        }
+    }
     /** Offer iOS 27 video in car, played only while the gear reads P (needs ADB over network). */
     fun videoWhileParked(context: Context): Boolean = prefs(context).getBoolean(KEY_VIDEO_WHILE_PARKED, false)
 

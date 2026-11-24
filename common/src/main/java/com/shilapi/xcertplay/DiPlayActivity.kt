@@ -131,14 +131,14 @@ class DiPlayActivity : ComponentActivity() {
         }
         val scroll = ScrollView(this).apply { addView(message) }
         AlertDialog.Builder(this)
-            .setTitle("Önceki çökme raporu")
+            .setTitle(getString(R.string.previous_crash_report))
             .setView(scroll)
-            .setPositiveButton("Kopyala") { _, _ ->
+            .setPositiveButton(getString(R.string.copy)) { _, _ ->
                 val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
                 clipboard.setPrimaryClip(ClipData.newPlainText("DiPlay crash", report))
-                Toast.makeText(this, "Crash raporu kopyalandı", Toast.LENGTH_LONG).show()
+                Toast.makeText(this, getString(R.string.crash_report_copied), Toast.LENGTH_LONG).show()
             }
-            .setNegativeButton("Kapat", null)
+            .setNegativeButton(getString(R.string.close), null)
             .show()
     }
 
@@ -385,6 +385,31 @@ class DiPlayActivity : ComponentActivity() {
                 ),
                 false,
             ) { showAbrpCredentialsDialog() }, matchButton(10, 56))
+            toggle(card, getString(R.string.mg4_wheel_speed_for_tunnels),
+                getString(R.string.mg4_wheel_speed_for_tunnels_description),
+                BydOutputSettings.wheelSpeedToIphone(this)) {
+                BydOutputSettings.setWheelSpeedToIphone(this, it)
+                if (CarPlayBackgroundSession.hasSession()) connect(AirPlayPersistence.loadWirelessEnabled(this))
+            }
+            val nightModes = NightModePreference.entries
+            choice(card, getString(R.string.carplay_night_mode),
+                nightModes.map { it.localizedLabel(this) },
+                nightModes.indexOf(AirPlayPersistence.loadNightModePreference(this)).coerceAtLeast(0),
+                reconnects = false) {
+                AirPlayPersistence.saveNightModePreference(this, nightModes[it])
+            }
+            if (android.os.Process.myUid() == android.os.Process.SYSTEM_UID &&
+                Mg4LauncherOverlaySupport.isDetectedSupported()
+            ) {
+                toggle(card, getString(R.string.mg4_launcher_overlay),
+                    getString(R.string.mg4_launcher_overlay_description),
+                    AirPlayPersistence.loadLauncherOverlayEnabled(this)) { enabled ->
+                    AirPlayPersistence.saveLauncherOverlayEnabled(this, enabled)
+                    val serviceIntent = Intent(this, Mg4LauncherOverlayService::class.java)
+                    if (enabled) runCatching { startService(serviceIntent) }
+                    else runCatching { stopService(serviceIntent) }
+                }
+            }
             toggle(card, getString(R.string.video_while_parked),
                 getString(R.string.mg4_video_while_parked_description),
                 BydOutputSettings.videoWhileParked(this)) {
@@ -739,6 +764,7 @@ class DiPlayActivity : ComponentActivity() {
             parent.addView(label(getString(R.string.hotspot_setup), 22, TEXT, true))
             parent.addView(label(getString(R.string.s_1_open_car_hotspot_settings_turn_the_hotspot_on_and_sele), 16, MUTED).apply { setPadding(0, dp(8), 0, dp(12)) })
             parent.addView(button(getString(R.string.open_car_hotspot_settings), false) { openCarWifiSettings() }, matchButton(0, 60))
+            parent.addView(button(getString(R.string.import_car_hotspot), false) { importCarHotspotCredentials() }, matchButton(12, 60))
             parent.addView(button(if (pendingCarHotspotSetup) getString(R.string.save_hotspot_details_and_use_this_mode) else "${getString(R.string.edit_saved_hotspot_prefix)}${storedSsid()}", false) {
                 askHotspotCredentials { ssid, password ->
                     saveHotspotCredentials(ssid, password)
@@ -839,12 +865,32 @@ class DiPlayActivity : ComponentActivity() {
         AirPlayPersistence.saveManualHotspotChannel(this, 0)
     }
 
+    private fun importCarHotspotCredentials() {
+        val creds = CarHotspotController.readSavedApCredentials(this)
+        if (creds == null) {
+            toast(getString(R.string.car_hotspot_unreadable))
+            return
+        }
+        val problem = hotspotError(creds.ssid, creds.passphrase)
+        if (problem != null) {
+            toast(problem)
+            return
+        }
+        saveHotspotCredentials(creds.ssid, creds.passphrase)
+        pendingCarHotspotSetup = false
+        applyWirelessLink(WirelessHotspotMode.MANUAL)
+        toast(getString(R.string.car_hotspot_imported, creds.ssid))
+    }
+
     private fun askHotspotCredentials(done: (String, String) -> Unit) {
         val fields = column().apply { setPadding(dp(24), dp(12), dp(24), dp(12)) }
         fields.addView(label(getString(R.string.copy_these_from_the_car_s_hotspot_settings_use_5_ghz_if_av), 16, MUTED))
-        val ssid = EditText(this).apply { hint = getString(R.string.hotspot_name); setText(storedSsid()); setSingleLine() }
+        val detected = CarHotspotController.readSavedApCredentials(this)
+        val initialSsid = storedSsid().ifBlank { detected?.ssid.orEmpty() }
+        val initialPass = storedPassword().ifBlank { detected?.passphrase.orEmpty() }
+        val ssid = EditText(this).apply { hint = getString(R.string.hotspot_name); setText(initialSsid); setSingleLine() }
         val password = EditText(this).apply {
-            hint = getString(R.string.hotspot_password); setText(storedPassword()); setSingleLine()
+            hint = getString(R.string.hotspot_password); setText(initialPass); setSingleLine()
             inputType = android.text.InputType.TYPE_CLASS_TEXT or android.text.InputType.TYPE_TEXT_VARIATION_PASSWORD
         }
         ssid.imeOptions = android.view.inputmethod.EditorInfo.IME_ACTION_NEXT or android.view.inputmethod.EditorInfo.IME_FLAG_NO_EXTRACT_UI
@@ -862,6 +908,17 @@ class DiPlayActivity : ComponentActivity() {
             if (action == android.view.inputmethod.EditorInfo.IME_ACTION_DONE) { hideKeyboard(); true } else false
         }
         fields.addView(ssid); fields.addView(password)
+        fields.addView(button(getString(R.string.import_car_hotspot), false) {
+            val read = CarHotspotController.readSavedApCredentials(this)
+            if (read == null) {
+                toast(getString(R.string.car_hotspot_unreadable))
+            } else {
+                ssid.setText(read.ssid)
+                password.setText(read.passphrase)
+                password.setSelection(password.text.length)
+                toast(getString(R.string.car_hotspot_imported, read.ssid))
+            }
+        }, matchButton(8, 52))
         fields.addView(CheckBox(this).apply {
             text = getString(R.string.show_password)
             setOnCheckedChangeListener { _, checked ->
@@ -1274,6 +1331,14 @@ class DiPlayActivity : ComponentActivity() {
                     appendLine("Saved resolution preference (may differ from active session): ${AirPlayPersistence.loadDisplayScaleTenths(appContext) * 10}%")
                     appendLine("Session: ${if (CarPlayBackgroundSession.active) "active" else if (CarPlayBackgroundSession.hasSession()) "connecting" else "stopped"}")
                     appendLine("Head-unit board: ${Build.BOARD}; hardware: ${Build.HARDWARE}; build: ${Build.DISPLAY}")
+                    appendLine("Process UID: ${android.os.Process.myUid()} (system=${android.os.Process.myUid() == android.os.Process.SYSTEM_UID})")
+                    appendLine()
+                    appendLine("--- MG4 / DBI68 diagnostics ---")
+                    appendLine(com.shilapi.xcertplay.vehicle.Mg4SaicSignals.diagnosticsSummary(appContext))
+                    appendLine("Launcher overlay: supported=${Mg4LauncherOverlaySupport.isDetectedSupported()} target=${Mg4LauncherOverlaySupport.profileForDetected()?.launcherPackage ?: "none"} enabled=${AirPlayPersistence.loadLauncherOverlayEnabled(appContext)}")
+                    appendLine("Night mode: pref=${AirPlayPersistence.loadNightModePreference(appContext)} systemDark=${isSystemDarkMode(appContext, appContext.resources.configuration.uiMode)}")
+                    appendLine("Location providers: ${com.shilapi.xcertplay.location.AndroidCarPlayLocationProvider.providerDiagnostics(appContext)}")
+                    appendLine("Car hotspot: enabled=${com.shilapi.xcertplay.network.CarHotspotStatus.isEnabled(appContext)} apConfigReadable=${CarHotspotController.readSavedApCredentials(appContext) != null}")
                     appendLine()
                     appendLine("--- Last display negotiation (timestamps distinguish it from current settings) ---")
                     appendLine(DisplayDiagnosticSnapshot.report(appContext))

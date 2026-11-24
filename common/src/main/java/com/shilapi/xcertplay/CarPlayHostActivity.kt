@@ -345,6 +345,13 @@ class CarPlayHostActivity : ComponentActivity() {
     private val airPlayCommandExecutor: ExecutorService = Executors.newSingleThreadExecutor()
     private val logLines = ArrayDeque<LogEntry>()
     private val expireOldLogLines = Runnable { refreshLogView(System.currentTimeMillis()) }
+    private val nightModePoll = object : Runnable {
+        override fun run() {
+            if (shuttingDown.get() || activeAirPlaySession == null) return
+            refreshAndSyncDarkMode()
+            mainHandler.postDelayed(this, NIGHT_MODE_POLL_MILLIS)
+        }
+    }
     private val applyDisplaySize = Runnable {
         val size = pendingDisplaySize ?: return@Runnable
         pendingDisplaySize = null
@@ -405,7 +412,11 @@ class CarPlayHostActivity : ComponentActivity() {
         }
         window.addFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         initializeSessionLog()
-        darkMode = isDarkMode(resources.configuration.uiMode)
+        darkMode = resolveNightMode(
+            preference = AirPlayPersistence.loadNightModePreference(this),
+            systemDark = isSystemDarkMode(this, resources.configuration.uiMode),
+            sideLightsOn = null,
+        )
         advancedAudioChannelMappingSupported =
             resources.getBoolean(R.bool.config_advanced_audio_channel_mapping)
         airPlayIdentity = AirPlayPersistence.loadIdentity(this)
@@ -596,6 +607,7 @@ class CarPlayHostActivity : ComponentActivity() {
         }
         ensureClusterPresentation()
         maybeStartCarPlay()
+        refreshAndSyncDarkMode()
         applyFullscreenMode()
     }
 
@@ -752,11 +764,7 @@ class CarPlayHostActivity : ComponentActivity() {
 
     override fun onConfigurationChanged(newConfig: Configuration) {
         super.onConfigurationChanged(newConfig)
-        val nextDarkMode = isDarkMode(newConfig.uiMode)
-        if (nextDarkMode != darkMode) {
-            darkMode = nextDarkMode
-            syncAirPlayDarkMode()
-        }
+        refreshAndSyncDarkMode(newConfig.uiMode)
         applyFullscreenMode()
         stageStatusView?.maxWidth = (resources.displayMetrics.widthPixels * 0.78f).toInt()
         scrollLogsToBottom()
@@ -771,6 +779,7 @@ class CarPlayHostActivity : ComponentActivity() {
         dismissClusterPresentation()
         mainHandler.removeCallbacks(applyDisplaySize)
         mainHandler.removeCallbacks(expireOldLogLines)
+        mainHandler.removeCallbacks(nightModePoll)
         currentSurface?.let { surface ->
             sink?.clearSurface(SCREEN_TYPE_MAIN, surface)
             sink?.clearSurface(SCREEN_TYPE_ALT, surface)
@@ -3005,7 +3014,9 @@ class CarPlayHostActivity : ComponentActivity() {
                     armVideoStallWatchdog()
                     CarPlayBackgroundSession.active = true
                     reconnectAttempts = 0
-                    syncAirPlayDarkMode()
+                    refreshAndSyncDarkMode(forceSync = true)
+                    mainHandler.removeCallbacks(nightModePoll)
+                    mainHandler.postDelayed(nightModePoll, NIGHT_MODE_POLL_MILLIS)
                     if (menuOpen) return@runOnUiThread
                     appendLog("AirPlay session active")
                 }
@@ -3014,6 +3025,7 @@ class CarPlayHostActivity : ComponentActivity() {
             override fun onSessionEnded(session: AirPlaySession) {
                 runOnUiThread {
                     cancelVideoStallWatchdog()
+                    mainHandler.removeCallbacks(nightModePoll)
                     if (activeAirPlaySession === session) activeAirPlaySession = null
                     CarPlayBackgroundSession.active = false
                     if (menuOpen || controllerGeneration != restartGeneration) {
@@ -3132,7 +3144,7 @@ class CarPlayHostActivity : ComponentActivity() {
                 !config.locationReportingEnabled -> null
                 config.identification.vehicleSpeedEnabled -> VehicleSpeedLocationProvider(
                     AndroidCarPlayLocationProvider(this),
-                    com.shilapi.xcertplay.hud.BydNavigationOutputs.wheelSpeed(applicationContext),
+                    com.shilapi.xcertplay.vehicle.VehicleIntegration.wheelSpeed(applicationContext),
                 )
                 else -> AndroidCarPlayLocationProvider(this)
             }
@@ -3211,20 +3223,46 @@ class CarPlayHostActivity : ComponentActivity() {
         }
     }
 
-    private fun syncAirPlayDarkMode() {
-        val session = activeAirPlaySession ?: return
-        val night = darkMode
+    private fun refreshAndSyncDarkMode(
+        uiMode: Int = resources.configuration.uiMode,
+        forceSync: Boolean = false,
+    ) {
+        val preference = AirPlayPersistence.loadNightModePreference(this)
+        val systemDark = isSystemDarkMode(this, uiMode)
+        val session = activeAirPlaySession
+        if (session == null) {
+            darkMode = resolveNightMode(preference, systemDark, null)
+            return
+        }
+        val checkHeadlights = preference == NightModePreference.AUTO &&
+            com.shilapi.xcertplay.vehicle.VehicleIntegration.isMg4(applicationContext)
         airPlayCommandExecutor.execute {
-            try {
-                val sent = session.setNightMode(night)
-                Log.i(
-                    TAG,
-                    "AirPlay dark mode=${if (night) "dark" else "light"} eventChannelReady=$sent",
-                )
-            } catch (error: Throwable) {
-                Log.w(TAG, "Could not send AirPlay dark mode update", error)
+            val sideLight = if (checkHeadlights) {
+                runCatching {
+                    com.shilapi.xcertplay.vehicle.Mg4SaicSignals.isSideLightOn(applicationContext)
+                }.getOrNull()
+            } else {
+                null
+            }
+            val next = resolveNightMode(preference, systemDark, sideLight)
+            if (forceSync || next != darkMode) {
+                darkMode = next
+                try {
+                    val sent = session.setNightMode(next)
+                    Log.i(
+                        TAG,
+                        "AirPlay dark mode=${if (next) "dark" else "light"} pref=$preference " +
+                            "sideLight=$sideLight eventChannelReady=$sent",
+                    )
+                } catch (error: Throwable) {
+                    Log.w(TAG, "Could not send AirPlay dark mode update", error)
+                }
             }
         }
+    }
+
+    private fun syncAirPlayDarkMode() {
+        refreshAndSyncDarkMode(forceSync = true)
     }
 
     private fun audioCaptureDirectory(): File? {
@@ -3761,6 +3799,7 @@ class CarPlayHostActivity : ComponentActivity() {
         const val MAX_STARTUP_WATCHDOG_RETRIES = 2
         const val MAX_RECONNECT_ATTEMPTS = 5
         const val VIDEO_STALL_POLL_MILLIS = 2_000L
+        const val NIGHT_MODE_POLL_MILLIS = 2_000L
         const val VIDEO_STALL_RECOVERY_MILLIS = 8_000L
         const val VIDEO_STALL_RESTART_MILLIS = 5_000L
         const val AUDIO_CAPTURE_MARKER = "audio-capture.enabled"

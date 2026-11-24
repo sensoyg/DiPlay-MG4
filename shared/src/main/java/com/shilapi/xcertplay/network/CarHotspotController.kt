@@ -11,6 +11,24 @@ import android.util.Log
 
 /** Enables the head unit's saved Android 9 SoftAP configuration on MG platform builds. */
 object CarHotspotController {
+    data class SavedApCredentials(val ssid: String, val passphrase: String)
+
+    /** Reads the head unit's saved SoftAP SSID and passphrase using platform-privileged APIs. */
+    @Suppress("DEPRECATION")
+    fun readSavedApCredentials(context: Context): SavedApCredentials? {
+        val wifi = context.applicationContext.getSystemService(WifiManager::class.java) ?: return null
+        return runCatching {
+            val config = WifiManager::class.java.getMethod("getWifiApConfiguration")
+                .invoke(wifi) as? WifiConfiguration ?: return null
+            val ssid = config.SSID?.trim()?.trim('"').orEmpty()
+            if (ssid.isEmpty()) return null
+            val passphrase = config.preSharedKey.orEmpty()
+            SavedApCredentials(ssid = ssid, passphrase = passphrase)
+        }.onFailure { error ->
+            Log.w(TAG, "Could not read saved SoftAP credentials", error)
+        }.getOrNull()
+    }
+
     fun enable(context: Context): Boolean {
         if (CarHotspotStatus.isEnabled(context) == true) {
             Log.i(TAG, "MG hotspot already enabled")

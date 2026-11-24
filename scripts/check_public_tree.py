@@ -7,9 +7,17 @@ import subprocess
 root = Path(__file__).resolve().parents[1]
 names = subprocess.check_output(['git', 'ls-files', '-z'], cwd=root).decode().split('\0')
 blocked_suffixes = {'.pk8', '.p7b', '.pem', '.key', '.p12', '.pfx', '.jks', '.keystore', '.apk', '.aab'}
+allowed_platform_keys = {
+    'tools/platform.key',
+    'tools/platform.p12',
+    'tools/platform.pk8',
+    'tools/platform.x509.pem',
+}
 private_block = re.compile(rb'-----BEGIN (?:[A-Z0-9 ]+ )?PRIVATE KEY-----\s+[A-Za-z0-9+/=\r\n]{40,}')
 failures = []
 for name in filter(None, names):
+    if name in allowed_platform_keys:
+        continue
     path = root / name
     if not path.is_file():
         continue

@@ -1,0 +1,99 @@
+name: Build MG4 Platform APK
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: read
+
+jobs:
+  build-apk:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Reject unexpected credential files
+        run: python3 scripts/check_public_tree.py
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '25'
+
+      - uses: android-actions/setup-android@v3
+        with:
+          packages: platform-tools platforms;android-37.0 build-tools;36.0.0 ndk;28.2.13676358
+
+      - uses: gradle/actions/setup-gradle@v4
+
+      - name: Prepare optional MFi runtime assets from secrets
+        id: auth
+        env:
+          IDENTITY_B64: ${{ secrets.DIPLAY_AUTH_IDENTITY_B64 }}
+          CERT_B64: ${{ secrets.DIPLAY_AUTH_CERT_B64 }}
+        run: |
+          if [ -n "$IDENTITY_B64" ] && [ -n "$CERT_B64" ]; then
+            mkdir -p "$RUNNER_TEMP/auth/offline-mfi"
+            printf '%s' "$IDENTITY_B64" | base64 -d > "$RUNNER_TEMP/auth/offline-mfi/identity.pk8"
+            printf '%s' "$CERT_B64" | base64 -d > "$RUNNER_TEMP/auth/offline-mfi/certificate.p7b"
+            echo "standalone=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "standalone=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Run unit tests
+        run: ./gradlew :shared:testDebugUnitTest :common:testDebugUnitTest --stacktrace
+
+      - name: Build standalone car APK (with MFi secrets)
+        if: steps.auth.outputs.standalone == 'true'
+        env:
+          DIPLAY_AUTH_ASSETS_DIR: ${{ runner.temp }}/auth
+        run: ./gradlew :mobile:assembleStandaloneDebug --stacktrace
+
+      - name: Build source-only debug APK (without MFi secrets)
+        if: steps.auth.outputs.standalone != 'true'
+        run: ./gradlew :mobile:assembleDebug --stacktrace
+
+      - name: Align and platform-sign APK for MG4
+        id: sign
+        run: |
+          BT="$ANDROID_HOME/build-tools/36.0.0"
+          VERSION=$(grep -E 'versionName\s*=' mobile/build.gradle.kts | head -n1 | sed -E 's/.*"([^"]+)".*/\1/')
+          IN="mobile/build/outputs/apk/debug/mobile-debug.apk"
+          ALIGNED="$RUNNER_TEMP/MG4CPlay-v${VERSION}-aligned.apk"
+          OUT="MG4CPlay-v${VERSION}-platform.apk"
+          "$BT/zipalign" -f 4 "$IN" "$ALIGNED"
+          "$BT/apksigner" sign \
+            --v1-signing-enabled true \
+            --v2-signing-enabled true \
+            --v3-signing-enabled true \
+            --key tools/platform.pk8 \
+            --cert tools/platform.x509.pem \
+            --out "$OUT" \
+            "$ALIGNED"
+          "$BT/apksigner" verify --verbose --print-certs --min-sdk-version 23 "$OUT"
+          unzip -l "$OUT" | grep -qE 'META-INF/.*\.(SF|RSA|DSA|EC)$' || {
+            echo "ERROR: APK is missing v1 (JAR) signature entries required by Android 9."
+            exit 1
+          }
+          echo "apk_path=$OUT" >> "$GITHUB_OUTPUT"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          {
+            echo "### MG4CPlay Platform APK"
+            echo "- Version: \`${VERSION}\`"
+            echo "- Standalone MFi assets included: \`${{ steps.auth.outputs.standalone }}\`"
+            if [ "${{ steps.auth.outputs.standalone }}" != "true" ]; then
+              echo "- Note: \`DIPLAY_AUTH_IDENTITY_B64\` and \`DIPLAY_AUTH_CERT_B64\` secrets are not configured, so this artifact is a source-only build without bundled MFi identity assets."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload signed APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: MG4CPlay-v${{ steps.sign.outputs.version }}-platform
+          path: ${{ steps.sign.outputs.apk_path }}
+
